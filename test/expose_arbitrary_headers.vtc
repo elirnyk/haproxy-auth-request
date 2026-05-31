@@ -42,12 +42,12 @@ server s_auth_backend {
 
 haproxy h1 -conf {
     global
-        lua-prepend-path ${testdir}/../?/http.lua
         lua-load ${testdir}/../auth-request.lua
 
     listen fe1
         mode http
         bind "fd@${fe1}"
+        option http-buffer-request
 
         http-request lua.auth-request auth_backend /allow
         http-request deny unless { var(req.auth_response_header.x_authenticated_user) -m str root }
@@ -82,5 +82,5 @@ client c2 -connect ${h1_fe1_sock} {
     txreq
     rxresp
     expect resp.status == 200
-    expect resp.http.x-echo == "text/plain|root|root@example.com,root@example.net"
+    expect resp.http.x-echo == "text/plain|root|root@example.com, root@example.net"
 } -run

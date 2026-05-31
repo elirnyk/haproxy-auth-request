@@ -23,12 +23,12 @@ server s_auth_backend_deny {
 
 haproxy h1 -conf {
     global
-        lua-prepend-path ${testdir}/../?/http.lua
         lua-load-per-thread ${testdir}/../auth-request.lua
 
     listen fe1
         mode http
         bind "fd@${fe1}"
+        option http-buffer-request
 
         http-request lua.auth-request auth_backend_allow /allow if { path /allow }
         http-request lua.auth-request auth_backend_deny  /deny  if { path /deny }

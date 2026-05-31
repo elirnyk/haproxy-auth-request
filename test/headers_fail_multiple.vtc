@@ -19,12 +19,12 @@ server s_auth_backend {
 
 haproxy h1 -conf {
     global
-        lua-prepend-path ${testdir}/../?/http.lua
         lua-load ${testdir}/../auth-request.lua
 
     listen fe1
         mode http
         bind "fd@${fe1}"
+        option http-buffer-request
 
         # VTest only sees the first header with a given name, thus
         # we split the expected headers into separate headers that
@@ -39,6 +39,7 @@ haproxy h1 -conf {
     listen fe2
         mode http
         bind "fd@${fe2}"
+        option http-buffer-request
         http-request lua.auth-intercept auth_backend / * * - x-user,x-reason,set-cookie
 
     backend auth_backend

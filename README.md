@@ -6,13 +6,9 @@ loosely based on the [ngx_http_auth_request_module] module for nginx.
 
 ## Requirements
 
-- HAProxy 1.8.4+ (2.2.0+ recommended)
+- HAProxy 2.2+ (2.4+ recommended)
   - Only the latest version of each HAProxy branch is supported.
 - `USE_LUA=1` must be set at compile time.
-- [haproxy-lua-http] must be available within the Lua path.
-  - A `json` library within the Lua path (dependency of haproxy-lua-http).
-  - With HAProxy 2.1.3+ you can use the [`lua-prepend-path`] configuration
-    option to specify the search path.
 
 ## Usage
 
@@ -20,7 +16,6 @@ loosely based on the [ngx_http_auth_request_module] module for nginx.
     ```haproxy
     global
         # *snip*
-        lua-prepend-path /usr/share/haproxy/?/http.lua # If haproxy-lua-http is saved as /usr/share/haproxy/haproxy-lua-http/http.lua
         lua-load /usr/share/haproxy/auth-request.lua
     ```
 

@@ -22,55 +22,33 @@
 --
 -- SPDX-License-Identifier: MIT
 
-local http = require("haproxy-lua-http")
-
 core.register_action("auth-request", { "http-req" }, function(txn, be, path)
-	auth_request(txn, be, path, "HEAD", ".*", "-", "-")
+	auth_request(txn, be, path, "HEAD", { "^.*$" }, nil, nil)
 end, 2)
 
 core.register_action("auth-intercept", { "http-req" }, function(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
-	hdr_req = globToLuaPattern(hdr_req)
-	hdr_succeed = globToLuaPattern(hdr_succeed)
-	hdr_fail = globToLuaPattern(hdr_fail)
+	hdr_req = globToLuaPatterns(hdr_req)
+	hdr_succeed = globToLuaPatterns(hdr_succeed)
+	hdr_fail = globToLuaPatterns(hdr_fail)
 	auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 end, 6)
 
-function globToLuaPattern(glob)
+function globToLuaPatterns(glob)
 	if glob == "-" then
-		return "-"
+		return nil
 	end
-	-- magic chars: '^', '$', '(', ')', '%', '.', '[', ']', '*', '+', '-', '?'
-	-- https://www.lua.org/manual/5.4/manual.html#6.4.1
-	--
-	-- this chain is:
-	-- 1. escaping all the magic chars, adding a `%` in front of all of them,
-	--    except the chars being processed later in the chain;
-	-- 1.1. all the chars inside the [set] are magic chars and have special
-	--      meaning inside a set, so we're also escaping all of them to avoid
-	--      misbehavior;
-	-- 2. converting "match all" `*` and "match one" `?` to their Lua pattern
-	--    counterparts;
-	-- 3. adding start and finish boundaries outside the whole string and,
-	--    being a comma-separated list, between every single item as well.
-	return "^" .. glob:gsub("[%^%$%(%)%%%.%[%]%+%-]", "%%%1"):gsub("*", ".*"):gsub("?", "."):gsub(",", "$,^") .. "$"
+	local patterns = {}
+	for g in glob:gmatch("[^,]+") do
+		-- magic chars: '^', '$', '(', ')', '%', '.', '[', ']', '*', '+', '-', '?'
+		-- https://www.lua.org/manual/5.4/manual.html#6.4.1
+		local p = "^" .. g:gsub("[%^%$%(%)%%%.%[%]%+%-]", "%%%1"):gsub("*", ".*"):gsub("?", ".") .. "$"
+		table.insert(patterns, p)
+	end
+	return patterns
 end
 
-function set_var_pre_2_2(txn, var, value)
-	return txn:set_var(var, value)
-end
-function set_var_post_2_2(txn, var, value)
+function set_var(txn, var, value)
 	return txn:set_var(var, value, true)
-end
-
-set_var = function(txn, var, value)
-	local success = pcall(set_var_post_2_2, txn, var, value)
-	if success then
-		set_var = set_var_post_2_2
-	else
-		set_var = set_var_pre_2_2
-	end
-
-	return set_var(txn, var, value)
 end
 
 function sanitize_header_for_variable(header)
@@ -78,13 +56,14 @@ function sanitize_header_for_variable(header)
 end
 
 -- header_match checks whether the provided header matches the pattern.
--- pattern is a comma-separated list of Lua Patterns.
-function header_match(header, pattern)
-	if header == "content-length" or header == "host" or pattern == "-" then
+-- patterns is a table of Lua Patterns.
+function header_match(header, patterns)
+	if header == "content-length" or header == "host" or not patterns then
 		return false
 	end
-	for p in pattern:gmatch("[^,]*") do
-		if header:match(p) then
+	header = header:lower()
+	for _, p in ipairs(patterns) do
+		if header:match(p:lower()) then
 			return true
 		end
 	end
@@ -96,14 +75,18 @@ end
 function send_response(txn, response, hdr_fail)
 	local reply = txn:reply()
 	if response then
-		reply:set_status(response.status_code)
-		for header, value in response:get_headers(false) do
+		reply:set_status(response.status)
+		for header, values in pairs(response.headers) do
 			if header_match(header, hdr_fail) then
-				reply:add_header(header, value)
+				local i = 0
+				while values[i] do
+					reply:add_header(header, values[i])
+					i = i + 1
+				end
 			end
 		end
-		if response.content then
-			reply:set_body(response.content)
+		if response.body then
+			reply:set_body(response.body)
 		end
 	else
 		reply:set_status(500)
@@ -112,13 +95,13 @@ function send_response(txn, response, hdr_fail)
 end
 
 -- auth_request makes the request to the external authentication service
--- and waits for the response. hdr_* params receive a comma-separated
--- list of Lua Patterns used to identify the headers that should be
--- copied between the requests and responses. A dash `-` in these params
+-- and waits for the response. hdr_* params receive a table of
+-- Lua Patterns used to identify the headers that should be
+-- copied between the requests and responses. nil in these params
 -- mean that the headers shouldn't be copied at all.
 -- Special values and behavior:
 -- * method == "*": call the auth service using the same method used by the client.
--- * hdr_fail == "-": make the Lua script to not terminate the request.
+-- * hdr_fail == nil: make the Lua script to not terminate the request.
 function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 	set_var(txn, "txn.auth_response_successful", false)
 
@@ -146,17 +129,13 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 	end
 
 	-- Transform table of request headers from haproxy's to
-	-- socket.http's format.
-	local headers = {}
+	-- core.httpclient's format.
+	local headers = {
+		["connection"] = { "close" },
+	}
 	for header, values in pairs(txn.http:req_get_headers()) do
 		if header_match(header, hdr_req) then
-			for i, v in pairs(values) do
-				if headers[header] == nil then
-					headers[header] = v
-				else
-					headers[header] = headers[header] .. ", " .. v
-				end
-			end
+			headers[header] = values
 		end
 	end
 
@@ -164,19 +143,62 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 	if method == "*" then
 		method = txn.sf:method()
 	end
-	local response, err = http.send(method:upper(), {
-		url = "http://" .. addr .. path,
+	
+	-- Handle IPv6 addresses in URL
+	local url_addr = addr
+	if addr:find(":") and not addr:find("%[") then
+		local _, count = addr:gsub(":", ":")
+		if count > 1 then
+			local ip, port = addr:match("^(.*):(%d+)$")
+			if ip and port then
+				url_addr = "[" .. ip .. "]:" .. port
+			else
+				url_addr = "[" .. addr .. "]"
+			end
+		end
+	end
+
+	local httpclient = core.httpclient()
+	local params = {
+		url = "http://" .. url_addr .. path,
 		headers = headers,
-	})
+		timeout = 1000, -- 1 second
+	}
+	
+	local response
+	local method_upper = method:upper()
+	if method_upper == "GET" then
+		response = httpclient:get(params)
+	elseif method_upper == "HEAD" then
+		response = httpclient:head(params)
+	elseif method_upper == "POST" then
+		params.body = txn.sf:req_body()
+		response = httpclient:post(params)
+	elseif method_upper == "PUT" then
+		params.body = txn.sf:req_body()
+		response = httpclient:put(params)
+	elseif method_upper == "DELETE" then
+		response = httpclient:delete(params)
+	else
+		-- Fallback for other methods if supported by the client object
+		local m = method_upper:lower()
+		if httpclient[m] then
+			response = httpclient[m](httpclient, params)
+		else
+			txn:Alert("Unsupported auth-request method: " .. method_upper)
+			set_var(txn, "txn.auth_response_code", 500)
+			return
+		end
+	end
 
 	-- `terminate_on_failure == true` means that the Lua script should send the response
 	-- and terminate the transaction in the case of a failure. This will happen when
-	-- hdr_fail content isn't a dash `-`.
-	local terminate_on_failure = hdr_fail ~= "-"
+	-- hdr_fail isn't nil.
+	local terminate_on_failure = hdr_fail ~= nil
 
 	-- Check whether we received a valid HTTP response.
 	if response == nil then
-		txn:Warning("Failure in auth-request backend '" .. be .. "': " .. err)
+		txn:Warning("Failure in auth-request backend '" .. be .. "'")
 		set_var(txn, "txn.auth_response_code", 500)
 		if terminate_on_failure then
 			send_response(txn)
@@ -184,12 +206,21 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 		return
 	end
 
-	set_var(txn, "txn.auth_response_code", response.status_code)
-	local response_ok = 200 <= response.status_code and response.status_code < 300
+	set_var(txn, "txn.auth_response_code", response.status)
+	local response_ok = 200 <= response.status and response.status < 300
 
-	for header, value in response:get_headers(true) do
+	for header, values in pairs(response.headers) do
+		local value_list = {}
+		-- core.httpclient uses 0-indexed tables for header values.
+		local i = 0
+		while values[i] do
+			table.insert(value_list, values[i])
+			i = i + 1
+		end
+		
+		local value = table.concat(value_list, ", ")
 		set_var(txn, "req.auth_response_header." .. sanitize_header_for_variable(header), value)
-		if response_ok and hdr_succeed ~= "-" and header_match(header, hdr_succeed) then
+		if response_ok and hdr_succeed and header_match(header, hdr_succeed) then
 			txn.http:req_set_header(header, value)
 		end
 	end
@@ -202,10 +233,13 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 	elseif terminate_on_failure then
 		send_response(txn, response, hdr_fail)
 	-- Codes with Location: Passthrough location at redirect.
-	elseif response.status_code == 301 or response.status_code == 302 or response.status_code == 303 or response.status_code == 307 or response.status_code == 308 then
-		set_var(txn, "txn.auth_response_location", response:get_header("location", "last"))
+	elseif response.status == 301 or response.status == 302 or response.status == 303 or response.status == 307 or response.status == 308 then
+		local location = response.headers["location"]
+		if location then
+			set_var(txn, "txn.auth_response_location", location[#location])
+		end
 	-- 401 / 403: Do nothing, everything else: log.
-	elseif response.status_code ~= 401 and response.status_code ~= 403 then
-		txn:Warning("Invalid status code in auth-request backend '" .. be .. "': " .. response.status_code)
+	elseif response.status ~= 401 and response.status ~= 403 then
+		txn:Warning("Invalid status code in auth-request backend '" .. be .. "': " .. response.status)
 	end
 end

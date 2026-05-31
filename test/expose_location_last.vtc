@@ -26,12 +26,12 @@ server s_auth_backend {
 
 haproxy h1 -conf {
     global
-        lua-prepend-path ${testdir}/../?/http.lua
         lua-load ${testdir}/../auth-request.lua
 
     listen fe1
         mode http
         bind "fd@${fe1}"
+        option http-buffer-request
 
         http-request lua.auth-request auth_backend /allow
         http-response set-header x-status %[var(txn.auth_response_code)]

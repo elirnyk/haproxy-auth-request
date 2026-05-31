@@ -36,10 +36,6 @@ jobs:
     strategy:
       matrix:
         haproxy-versions:
-        - "1.8"
-        - "1.9"
-        - "2.0"
-        - "2.1"
         - "2.2"
         - "2.3"
         - "2.4"
@@ -62,16 +58,7 @@ jobs:
         branch: ${{ matrix.haproxy-versions }}
         install_vtest: yes
         use_lua: yes
-    - name: Install apt dependencies.
-      run: sudo apt-get install -y lua-json
     - uses: actions/checkout@v6
-      with:
-        submodules: recursive
-    - name: Install haproxy-lua-http globally.
-      run: |
-        sudo install -m755 -d /usr/local/share/lua/5.3/
-        sudo install -m644 haproxy-lua-http/http.lua /usr/local/share/lua/5.3/haproxy-lua-http.lua
-        sed -i 's/lua-prepend-path/#lua-prepend-path/g' test/*.vtc
     - name: Install problem matcher for VTest.
       run: echo "::add-matcher::.github/vtest.json"
     - name: Run tests using HAProxy ${{ steps.install-haproxy.outputs.version }}.
