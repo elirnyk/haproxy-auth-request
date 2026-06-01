@@ -6,7 +6,7 @@ loosely based on the [ngx_http_auth_request_module] module for nginx.
 
 ## Requirements
 
-- HAProxy 2.4+ (latest version recommended)
+- HAProxy 2.5+ (latest version recommended)
   - Only the latest version of each HAProxy branch is supported.
 - `USE_LUA=1` must be set at compile time.
 

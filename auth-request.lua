@@ -158,7 +158,13 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 		end
 	end
 
-	local httpclient = core.httpclient()
+	local httpclient = core.httpclient
+	if not httpclient then
+		txn:Alert("core.httpclient not available. This script requires HAProxy 2.5+.")
+		set_var(txn, "txn.auth_response_code", 500)
+		return
+	end
+	local client = httpclient()
 	local params = {
 		url = "http://" .. url_addr .. path,
 		headers = headers,
@@ -168,22 +174,22 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 	local response
 	local method_upper = method:upper()
 	if method_upper == "GET" then
-		response = httpclient:get(params)
+		response = client:get(params)
 	elseif method_upper == "HEAD" then
-		response = httpclient:head(params)
+		response = client:head(params)
 	elseif method_upper == "POST" then
 		params.body = txn.sf:req_body()
-		response = httpclient:post(params)
+		response = client:post(params)
 	elseif method_upper == "PUT" then
 		params.body = txn.sf:req_body()
-		response = httpclient:put(params)
+		response = client:put(params)
 	elseif method_upper == "DELETE" then
-		response = httpclient:delete(params)
+		response = client:delete(params)
 	else
 		-- Fallback for other methods if supported by the client object
 		local m = method_upper:lower()
-		if httpclient[m] then
-			response = httpclient[m](httpclient, params)
+		if client[m] then
+			response = client[m](client, params)
 		else
 			txn:Alert("Unsupported auth-request method: " .. method_upper)
 			set_var(txn, "txn.auth_response_code", 500)
