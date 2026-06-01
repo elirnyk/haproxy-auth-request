@@ -91,11 +91,6 @@ characters and `?` to match a single char. `*` will match any header name.
 `x-*` will match all header names started with `x-`. `x-????` will match
 `x-user` but will not match neither `x-token` nor `x-id`.
 
-HAProxy 2.1 or older: the On Failure param (the last one) will close the
-transaction and respond to the client if the value is not a dash `-`, however
-this feature is only supported on HAProxy 2.2 or newer. The only supported
-option on 2.1 and older is a dash `-`.
-
 ### Available Variables
 
 auth-request uses HAProxy variables to communicate the results back to you. The
@@ -154,18 +149,20 @@ response processing.
 
 ## Inner Workings
 
-The Lua script will make a HTTP request to the *first* server in the given
+The Lua script uses HAProxy's native `core.httpclient` to perform non-blocking
+subrequests. It will make a HTTP request to the *first* server in the given
 backend that is either marked as `UP` or that does not have checks enabled.
-This allows for basic health checking of the auth-request backend. If you need
-more complex processing of the request forward the auth-request to a separate
-HAProxy *frontend* that performs the required modifications to the request and
-response.
 
-The requested URL is the one given in the second parameter.
+The script uses a shared HTTP client per HAProxy thread to enable connection
+pooling (Keep-Alive) to your auth backend, which significantly reduces CPU
+overhead and latency.
 
 Any request headers will be forwarded as-is to the auth-request backend, with
-the exception of the `content-length` header which will be stripped, because
-the request body will not be forwarded.
+the exception of the `content-length` header which will be stripped.
+
+**Note**: If you use `POST` or `PUT` methods with a request body, you **must**
+add `option http-buffer-request` to your `frontend` or `listen` section to
+ensure the body is available to the Lua script.
 
 ## Known limitations
 

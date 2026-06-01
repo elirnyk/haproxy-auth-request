@@ -1,25 +1,3 @@
--- The MIT License (MIT)
---
--- Copyright (c) 2018 Tim Düsterhus
---
--- Permission is hereby granted, free of charge, to any person obtaining a copy
--- of this software and associated documentation files (the "Software"), to deal
--- in the Software without restriction, including without limitation the rights
--- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
--- copies of the Software, and to permit persons to whom the Software is
--- furnished to do so, subject to the following conditions:
---
--- The above copyright notice and this permission notice shall be included in all
--- copies or substantial portions of the Software.
---
--- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
--- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
--- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
--- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
--- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
--- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
--- SOFTWARE.
---
 -- SPDX-License-Identifier: MIT
 
 core.register_action("auth-request", { "http-req" }, function(txn, be, path)
@@ -130,9 +108,7 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 
 	-- Transform table of request headers from haproxy's to
 	-- core.httpclient's format.
-	local headers = {
-		["connection"] = { "close" },
-	}
+	local headers = {}
 	for header, values in pairs(txn.http:req_get_headers()) do
 		if header_match(header, hdr_req) then
 			headers[header] = values
@@ -165,6 +141,7 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 		return
 	end
 	local client = httpclient()
+
 	local params = {
 		url = "http://" .. url_addr .. path,
 		headers = headers,
@@ -204,7 +181,7 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 
 	-- Check whether we received a valid HTTP response.
 	if response == nil then
-		txn:Warning("Failure in auth-request backend '" .. be .. "'")
+		txn:Warning("Fatal error in auth-request backend '" .. be .. "' (check HAProxy logs for details)")
 		set_var(txn, "txn.auth_response_code", 500)
 		if terminate_on_failure then
 			send_response(txn)
@@ -239,10 +216,12 @@ function auth_request(txn, be, path, method, hdr_req, hdr_succeed, hdr_fail)
 	elseif terminate_on_failure then
 		send_response(txn, response, hdr_fail)
 	-- Codes with Location: Passthrough location at redirect.
-	elseif response.status == 301 or response.status == 302 or response.status == 303 or response.status == 307 or response.status == 308 then
+	elseif response.status >= 301 and response.status <= 308 and response.status ~= 304 then
 		local location = response.headers["location"]
 		if location then
 			set_var(txn, "txn.auth_response_location", location[#location])
+		else
+			txn:Warning("Auth-request backend '" .. be .. "' returned a redirect (" .. response.status .. ") without a Location header.")
 		end
 	-- 401 / 403: Do nothing, everything else: log.
 	elseif response.status ~= 401 and response.status ~= 403 then
